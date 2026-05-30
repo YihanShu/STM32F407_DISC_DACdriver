@@ -29,7 +29,10 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 #define AUDIO_BUF_SIZE 256
-#define A 50
+#define A 5000
+#define CS43_ADDR (0x4A << 1)
+
+
 int16_t audio_buf[AUDIO_BUF_SIZE];
 
 
@@ -71,6 +74,16 @@ void MX_USB_HOST_Process(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+    HAL_GPIO_TogglePin(GPIOD, LD4_Pin);
+}
+
+void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+    HAL_GPIO_TogglePin(GPIOD, LD3_Pin);
+}
+
 int _write(int file, char *ptr, int len)
 {
     for(int i = 0; i < len; i++)
@@ -87,6 +100,82 @@ void WaveGenerate()
 		audio_buf[i] = (int16_t)(A * sinf(2*3.14159f*i/AUDIO_BUF_SIZE));
 	}
 
+}
+void CS43_Write(uint8_t reg,uint8_t val)
+{
+	HAL_StatusTypeDef ret;
+	ret = HAL_I2C_Mem_Write(&hi2c1,
+        CS43_ADDR,
+        reg,
+        I2C_MEMADD_SIZE_8BIT,
+        &val,
+        1,
+        100);
+	if(ret != HAL_OK)
+	{
+		HAL_I2C_DeInit(&hi2c1);
+		HAL_Delay(2);
+		HAL_I2C_Init(&hi2c1);
+		printf("I2C MEM_Write ERROR, recover\r\n");
+	}
+}
+
+#define AUDIO_RESET_PIN GPIO_PIN_4
+#define AUDIO_RESET_PORT GPIOD
+
+void codec_reset(void)
+{
+    HAL_GPIO_WritePin(AUDIO_RESET_PORT, AUDIO_RESET_PIN, GPIO_PIN_RESET);
+    HAL_Delay(10);
+    HAL_GPIO_WritePin(AUDIO_RESET_PORT, AUDIO_RESET_PIN, GPIO_PIN_SET);
+    HAL_Delay(10);
+}
+
+void codec_init()
+{
+	for(int i=0;i<128;i++)
+	{
+		HAL_StatusTypeDef ret;
+		ret = HAL_I2C_IsDeviceReady(
+			  &hi2c1,
+			  i << 1,
+			  1,
+			  100);
+		if(ret == HAL_OK)
+		{
+			printf("FOUND: 0x%X \n", i);
+		}
+	}
+
+	CS43_Write(0x00, 0x99);
+	CS43_Write(0x47, 0x80);
+	CS43_Write(0x32, 0x80);
+	CS43_Write(0x32, 0x00);
+	CS43_Write(0x00, 0x00);
+
+	CS43_Write(0x02, 0x9E);
+	CS43_Write(0x04, 0xAF);
+	CS43_Write(0x05, 0x81);
+	CS43_Write(0x06, 0x07);
+
+	CS43_Write(0x0D, 0x00);
+	CS43_Write(0x0E, 0x00);
+
+	CS43_Write(0x20, 0x00);
+	CS43_Write(0x21, 0x00);
+
+}
+void I2S_Start()
+{
+	if(HAL_I2S_Transmit_DMA(&hi2s3, (uint16_t *)audio_buf, AUDIO_BUF_SIZE)==HAL_OK)
+	{
+		printf("I2S DMA Start OK\r\n");
+	}
+	else
+	{
+		printf("I2S DMA Start Fail\r\n");
+	}
+	printf("I2S State=%d \n",HAL_I2S_GetState(&hi2s3));
 }
 /* USER CODE END 0 */
 
@@ -127,6 +216,17 @@ int main(void)
 
   printf("Start\n");
   WaveGenerate();
+
+  HAL_I2C_Init(&hi2c1);
+  HAL_Delay(5);
+
+  codec_reset();
+  HAL_Delay(5);
+
+  codec_init();
+  HAL_Delay(5);
+  I2S_Start();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -212,7 +312,7 @@ static void MX_I2C1_Init(void)
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_ENABLE;
   hi2c1.Init.OwnAddress2 = 0;
   hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
@@ -339,7 +439,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
-                          |Audio_RST_Pin, GPIO_PIN_RESET);
+                          |Audio_RST_Pin|GPIO_PIN_5, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : CS_I2C_SPI_Pin */
   GPIO_InitStruct.Pin = CS_I2C_SPI_Pin;
@@ -384,19 +484,13 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(CLK_IN_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LD4_Pin LD3_Pin LD5_Pin LD6_Pin
-                           Audio_RST_Pin */
+                           Audio_RST_Pin PD5 */
   GPIO_InitStruct.Pin = LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
-                          |Audio_RST_Pin;
+                          |Audio_RST_Pin|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : OTG_FS_OverCurrent_Pin */
-  GPIO_InitStruct.Pin = OTG_FS_OverCurrent_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(OTG_FS_OverCurrent_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : MEMS_INT2_Pin */
   GPIO_InitStruct.Pin = MEMS_INT2_Pin;
